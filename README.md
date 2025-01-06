@@ -1,2 +1,5 @@
 # apple
-bad async io thing idk
+
+Horrible (and not yet functional) attempt at some sort of an I/O reactor!
+
+## IT'S BAD!!!
