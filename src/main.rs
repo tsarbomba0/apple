@@ -1,5 +1,7 @@
 use mio::{Events, Poll};
+mod reactor;
 mod tls_client;
+
 use async_lock::OnceCell;
 use mio::Token;
 use std::collections::HashMap;
@@ -100,14 +102,4 @@ fn main() {
     loop {
         std::thread::sleep(Duration::from_secs(1))
     }
-    //loop {
-    //    println!("Loop!");
-    //    poll.poll(&mut evns, None).unwrap();
-    //
-    //     for ev in evns.iter() {
-    //         println!("Inside event iterator!");
-    //         stream.ready(ev);
-    //         stream.reregister(poll.registry())
-    //     }
-    // }
 }
