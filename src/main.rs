@@ -6,14 +6,16 @@ use std::collections::HashMap;
 use std::io::Write;
 use std::sync::Mutex;
 use std::thread;
+use std::time::Duration;
 use tls_client::TlsClient;
 
 const CLIENT: Token = Token(0);
 
 fn main_loop() {
-    let r = Reactor::get();
-    println!("We workin!");
     loop {
+        let r = Reactor::get();
+
+        println!("We workin!");
         let mut r_poll = r.poll.lock().unwrap();
         let mut r_events = r.events.lock().unwrap();
         let mut r_reg = r.registry.lock().unwrap();
@@ -22,7 +24,7 @@ fn main_loop() {
 
         for ev in r_events.iter() {
             let conn = r_reg.get_mut(&ev.token());
-
+            println!("{:?}", &ev.token());
             match conn {
                 Some(conn) => {
                     conn.ready(ev);
@@ -60,8 +62,11 @@ impl Reactor {
     fn r_register(&self, thingy: &mut TlsClient) {
         let poll = self.poll.lock().unwrap();
         let registry = poll.registry();
+        thingy.register(registry);
+        drop(poll);
 
-        thingy.register(registry)
+        let mut reg = self.registry.lock().unwrap();
+        reg.insert(*thingy.get_token(), thingy.clone());
     }
 }
 
@@ -82,12 +87,19 @@ fn main() {
     .as_bytes();
 
     stream.write_all(message).unwrap();
+    stream.write_all(message).unwrap();
+    stream.write_all(message).unwrap();
+    stream.write_all(message).unwrap();
+    stream.write_all(message).unwrap();
     // let mut poll = Poll::new().unwrap();
     // let mut evns = Events::with_capacity(64);
     let r = Reactor::get();
 
     r.r_register(&mut stream);
 
+    loop {
+        std::thread::sleep(Duration::from_secs(1))
+    }
     //loop {
     //    println!("Loop!");
     //    poll.poll(&mut evns, None).unwrap();

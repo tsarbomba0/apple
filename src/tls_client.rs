@@ -4,40 +4,49 @@ use rustls_pki_types::ServerName;
 use std::io;
 use std::io::{ErrorKind, Read, Result, Write};
 use std::net::ToSocketAddrs;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
+
 use webpki_roots::TLS_SERVER_ROOTS;
 
+struct Inner {
+    sock: Mutex<TcpStream>,
+    conn: Mutex<ClientConnection>,
+}
+
+#[derive(Clone)]
 pub struct TlsClient {
-    clean_close: bool,
-    closing: bool,
-    sock: TcpStream,
-    conn: ClientConnection,
     token: mio::Token,
+    inner: Arc<Inner>,
 }
 
 impl TlsClient {
     // private functions
     fn c_read(&mut self) {
-        match self.conn.read_tls(&mut self.sock) {
+        let inner = Arc::clone(&self.inner);
+        let mut sock = inner.sock.lock().unwrap();
+        let mut conn = inner.conn.lock().unwrap();
+
+        match conn.read_tls(&mut *sock) {
             Err(ref e) => {
                 if e.kind() == ErrorKind::WouldBlock {
                     return;
                 }
                 println!("TLS read error!");
-                self.closing = true;
+                //let bool = self.inner.closing.get_mut();
+                //bool = true;
                 return;
             }
             Ok(0) => {
                 println!("TLS Eof!");
-                self.closing = true;
+                //self.closing = true;
                 return;
             }
             Ok(_) => {}
         };
 
-        let state = match self.conn.process_new_packets() {
+        let state = match conn.process_new_packets() {
             Err(ref e) => {
-                self.closing = true;
+                //self.closing = true;
                 println!("TLS PROTOCOL ERROR: {}", e);
                 return;
             }
@@ -47,10 +56,7 @@ impl TlsClient {
         if state.plaintext_bytes_to_read() > 0 {
             let mut buf = vec![0u8; state.plaintext_bytes_to_read()];
 
-            self.conn
-                .reader()
-                .read_exact(&mut buf)
-                .expect("Reading failed!");
+            conn.reader().read_exact(&mut buf).expect("Reading failed!");
 
             io::stdout()
                 .write_all(&buf)
@@ -58,12 +64,14 @@ impl TlsClient {
         }
     }
     fn c_write(&mut self) {
-        self.conn
-            .write_tls(&mut self.sock)
-            .expect("TLS write failed");
+        let inner = Arc::clone(&self.inner);
+        let mut sock = inner.sock.lock().unwrap();
+        let mut conn = inner.conn.lock().unwrap();
+        conn.write_tls(&mut *sock).expect("TLS write failed");
     }
     fn interest(&self) -> mio::Interest {
-        let (r, w) = (self.conn.wants_read(), self.conn.wants_write());
+        let conn = self.inner.conn.lock().unwrap();
+        let (r, w) = (conn.wants_read(), conn.wants_write());
 
         if r && w {
             mio::Interest::READABLE | mio::Interest::WRITABLE
@@ -75,16 +83,20 @@ impl TlsClient {
     }
     pub fn register(&mut self, registry: &mio::Registry) {
         let int = self.interest();
+        let inner = Arc::clone(&self.inner);
+        let mut sock = inner.sock.lock().unwrap();
 
         registry
-            .register(&mut self.sock, self.token, int)
+            .register(&mut *sock, self.token, int)
             .expect("Registering failed!");
     }
     pub fn reregister(&mut self, registry: &mio::Registry) {
         let int = self.interest();
+        let inner = Arc::clone(&self.inner);
+        let mut sock = inner.sock.lock().unwrap();
 
         registry
-            .reregister(&mut self.sock, self.token, int)
+            .reregister(&mut *sock, self.token, int)
             .expect("Reregistering failed!");
     }
     pub fn ready(&mut self, ev: &mio::event::Event) {
@@ -98,7 +110,7 @@ impl TlsClient {
         }
         if ev.is_read_closed() || ev.is_write_closed() {
             println!("Closed!");
-            std::process::exit(if self.clean_close { 0 } else { 1 })
+            //std::process::exit(if self.clean_close { 0 } else { 1 })
         }
     }
 
@@ -108,7 +120,7 @@ impl TlsClient {
             .expect("Invalid hostname!")
             .next()
             .unwrap();
-        let sock = TcpStream::connect(addr)?;
+        let sock = Mutex::new(TcpStream::connect(addr)?);
 
         let root_cert = RootCertStore {
             roots: TLS_SERVER_ROOTS.into(),
@@ -121,30 +133,31 @@ impl TlsClient {
         );
 
         let server_name: ServerName = host.to_owned().try_into().expect("Invalid hostname");
-        let conn = ClientConnection::new(cfg, server_name).unwrap();
+        let conn = Mutex::new(ClientConnection::new(cfg, server_name).unwrap());
+        let inner = Arc::new(Inner { sock, conn });
 
-        Ok(Self {
-            clean_close: false,
-            closing: false,
-            sock,
-            conn,
-            token,
-        })
+        Ok(Self { token, inner })
+    }
+    pub fn get_token(&self) -> &mio::Token {
+        &self.token
     }
 }
 
 impl io::Write for TlsClient {
     fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
-        self.conn.writer().write(bytes)
+        let mut i = self.inner.conn.lock().unwrap();
+        i.writer().write(bytes)
     }
 
     fn flush(&mut self) -> io::Result<()> {
-        self.conn.writer().flush()
+        let mut i = self.inner.conn.lock().unwrap();
+        i.writer().flush()
     }
 }
 
 impl io::Read for TlsClient {
     fn read(&mut self, bytes: &mut [u8]) -> io::Result<usize> {
-        self.conn.reader().read(bytes)
+        let mut i = self.inner.conn.lock().unwrap();
+        i.reader().read(bytes)
     }
 }
