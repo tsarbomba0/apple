@@ -68,8 +68,11 @@ impl Task {
     fn send(self: &Arc<Self>) -> Result<(), mpmc::SendError<Arc<Task>>> {
         self.exec.send(self.clone())
     }
+    // Somehow implement a variable waker?
     fn poll(self: Arc<Self>) {
         if self.taskft.poll.is_pending() {
+            // TODO: Make my own waker, so i can wake the task
+            // from the i/o driver
             let waker = task::waker(self.clone());
             let mut cx = Context::from_waker(&waker);
             self.taskft.get_mut().poll(&mut cx)
@@ -83,6 +86,7 @@ impl ArcWake for Task {
     }
 }
 
+/// Async runtime.
 pub struct Runtime {
     /// Channels to send and receive tasks
     receiver: Receiver<Arc<Task>>,
@@ -92,9 +96,9 @@ pub struct Runtime {
     poll_rcv: Receiver<Event>,
     poll_snd: Sender<Event>,
 
-    /// I/O Driver and it's Handle
+    /// I/O Driver and handle.
     driver: IoReactor<'static>,
-    driver_handle: Arc<Handle>,
+    handle: Arc<Handle>,
 }
 
 impl Runtime {
@@ -105,65 +109,49 @@ impl Runtime {
         // Sender and Receiver channel for Events
         let (poll_snd, poll_rcv) = mpmc::channel();
 
-        // Driver and it's Reactor
-        let driver = IoReactor::new();
-        let driver_handle = driver.get_handle();
-
         // Thread local variable to hold the Runtime.
-        thread_local! {
-            static RUNTIME: OnceCell<Runtime> = OnceCell::new();
-        }
+        //thread_local! {
+        static RUNTIME: OnceCell<Runtime> = OnceCell::new();
+        //}
 
         // Acquires the reference to the OnceCell<T> in the static variable
         // and initializes it with the Runtime
-        RUNTIME.with(|runtime| {
-            runtime.get_or_init_blocking(|| {
-                // reactor
-                let reactor = Runtime {
-                    receiver: rc,
-                    sender: sd,
-                    poll_rcv,
-                    poll_snd,
-                    driver,
-                    driver_handle,
-                };
+        //RUNTIME.with(|runtime| {
+        RUNTIME.get_or_init_blocking(|| {
+            // Driver and it's handle
+            let (driver, handle) = IoReactor::new();
+            // Reactor
+            let reactor = Runtime {
+                receiver: rc,
+                sender: sd,
+                poll_rcv,
+                poll_snd,
+                driver,
+                handle,
+            };
 
-                // Stuff to be borrowed into the threads
-                let receiver = reactor.receiver.clone();
-                let sender = reactor.poll_snd.clone();
+            // Stuff to be borrowed into the threads
+            let receiver = reactor.receiver.clone();
+            //let sender = reactor.poll_snd.clone();
 
-                thread::scope(|s| {
-                    // Thread for polling tasks.
-                    s.spawn(move || {
-                        while let Ok(task) = receiver.recv() {
-                            task.poll();
-                        }
-                    });
-                    s.spawn(|| loop {
-                        reactor.driver.poll_events();
-                    })
+            // This can be solved by using Arc<Mutex<T>>
+            // probably
+            thread::spawn(|| loop {
+                reactor.driver.poll_events();
+            });
+
+            thread::scope(|s| {
+                // Thread for polling tasks.
+                s.spawn(move || {
+                    while let Ok(task) = receiver.recv() {
+                        task.poll();
+                    }
                 });
+            });
 
-                reactor
-            })
+            reactor
+            //})
         })
-    }
-
-    /// Starts the I/O Reactor.
-    fn start_io_reactor() -> Arc<Handle> {
-        let (sender, receiver) = mpmc::channel();
-        thread::spawn(move || {
-            let io_reactor = IoReactor::new();
-            match sender.send(io_reactor.get_handle()) {
-                Ok(_) => println!("Gave handle!"),
-                Err(e) => panic!("Oh god! {e:?}"),
-            }
-        });
-
-        match receiver.recv() {
-            Ok(handle) => handle,
-            Err(e) => panic!("Oh god, no handle!: {e:?}"),
-        }
     }
 
     /// Spawns a task onto the Runtime.
@@ -189,7 +177,7 @@ impl Runtime {
 
     /// Get registry.
     pub fn registry() -> &'static Registry {
-        &*Runtime::get().driver_handle.get_registry()
+        &Runtime::get().handle.get_registry()
     }
 
     // Get the channel for receiving events.

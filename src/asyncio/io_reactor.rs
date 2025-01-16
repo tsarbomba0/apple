@@ -48,7 +48,7 @@ pub struct IoReactor<'o> {
 
 impl<'o> IoReactor<'o> {
     /// Constructs a new IoReactor.
-    pub fn new() -> IoReactor<'o> {
+    pub fn new() -> (IoReactor<'o>, Arc<Handle>) {
         let events = Events::with_capacity(1024);
         // Not being able to create a poll is fatal.
         let poll = Poll::new().expect("Failed to create poll!");
@@ -61,11 +61,15 @@ impl<'o> IoReactor<'o> {
 
         let handle = Handle::new(reg, poll);
 
-        IoReactor {
+        let io = IoReactor {
             handle: Arc::new(handle),
             events: Mutex::new(events),
             srcs,
-        }
+        };
+
+        let h = Arc::clone(&io.handle);
+
+        (io, h)
     }
 
     /// Register device in the reactor's registry
@@ -79,6 +83,7 @@ impl<'o> IoReactor<'o> {
 
         let token_num = r.vacant_key();
         self.handle.reg.register(src, Token(token_num), intr);
+        // fix the types with WAKERS!
         let sched = SchedIo::new(token_num, self.get_handle(), src);
 
         let mut w = self.srcs.write().expect("failed to get write lock!");
