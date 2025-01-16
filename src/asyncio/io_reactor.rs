@@ -46,6 +46,7 @@ pub struct IoReactor<'o> {
     srcs: Sources<'o>,
 }
 
+// Impl <IoReactor>
 impl<'o> IoReactor<'o> {
     /// Constructs a new IoReactor.
     pub fn new() -> (IoReactor<'o>, Arc<Handle>) {
