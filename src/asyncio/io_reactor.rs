@@ -4,6 +4,7 @@ use mio::{Events, Interest, Poll, Registry, Token};
 use slab::Slab;
 use std::io::{Error, ErrorKind, Result};
 use std::sync::{Arc, LockResult, Mutex, RwLock, RwLockReadGuard};
+use std::task::Context;
 
 pub struct Handle {
     /// Poll
@@ -33,9 +34,9 @@ impl Handle {
     }
 }
 
-type Sources<'o> = Arc<RwLock<Slab<SchedIo<'o>>>>;
+type Sources = Arc<RwLock<Slab<SchedIo>>>;
 
-pub struct IoReactor<'o> {
+pub struct IoReactor {
     /// Inner shared state
     handle: Arc<Handle>,
 
@@ -43,13 +44,13 @@ pub struct IoReactor<'o> {
     events: Mutex<Events>,
 
     /// I/O Sources
-    srcs: Sources<'o>,
+    srcs: Sources,
 }
 
 // Impl <IoReactor>
-impl<'o> IoReactor<'o> {
+impl<'o> IoReactor {
     /// Constructs a new IoReactor.
-    pub fn new() -> (IoReactor<'o>, Arc<Handle>) {
+    pub fn new() -> (IoReactor, Arc<Handle>) {
         let events = Events::with_capacity(1024);
         // Not being able to create a poll is fatal.
         let poll = Poll::new().expect("Failed to create poll!");
@@ -119,12 +120,12 @@ impl<'o> IoReactor<'o> {
     }
 
     /// Obtain a read lock on the RwLock holding the Slab.
-    fn srcs_read(&'o self) -> LockResult<RwLockReadGuard<'o, Slab<SchedIo<'o>>>> {
+    fn srcs_read(&'o self) -> LockResult<RwLockReadGuard<'o, Slab<SchedIo>>> {
         self.srcs.read()
     }
 
     /// Poll for events and dispatch them
-    pub fn poll_events(&'o self) {
+    fn poll_events(&'o self) {
         let mut poll = self
             .handle
             .poll
@@ -147,7 +148,10 @@ impl<'o> IoReactor<'o> {
                 }
                 Some(regis) => regis,
             };
-            regis.dispatch(ev)
+            regis.wake()
         }
     }
+
+    /// Poll the reactor from a future.
+    pub fn poll(&self, tkn: Token, cx: &mut Context) {}
 }

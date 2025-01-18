@@ -1,30 +1,36 @@
-use super::io_reactor::{Handle, IoReactor};
-use mio::event::Event;
-use mio::event::Source;
+use super::io_reactor::Handle;
 use std::marker::{Send, Sync};
 use std::sync::Arc;
+use std::task::Waker;
 
-pub struct SchedIo<'i> {
+/// Relates a Task's Waker and the Handle of the Reactor
+pub struct SchedIo {
     address: usize,
     handle: Arc<Handle>,
-    io: Box<dyn Source + Send + Sync + 'i>,
+    waker: Option<Waker>,
 }
 
-impl<'i> SchedIo<'i> {
-    pub fn new(
-        addr: usize,
-        handle: Arc<Handle>,
-        io: Box<dyn Source + Send + Sync + 'i>,
-    ) -> SchedIo<'i> {
+// impl SchedIo
+impl SchedIo {
+    pub fn new(address: usize, handle: Arc<Handle>) -> SchedIo {
         Self {
-            address: addr,
+            address,
             handle,
-            io,
+            waker: None,
         }
     }
 
-    pub fn dispatch(&self, ev: &Event) {}
+    /// Sets a waker for this IO.
+    pub fn set_waker(&mut self, waker: &Waker) {
+        self.waker = Some(waker.clone_from(&waker));
+    }
+
+    /// Wakes up the IO.
+    pub fn wake(&self) {
+        // Will panic if there is no waker.
+        self.waker.unwrap().wake()
+    }
 }
 
-unsafe impl Send for SchedIo<'_> {}
-unsafe impl Sync for SchedIo<'_> {}
+unsafe impl Send for SchedIo {}
+unsafe impl Sync for SchedIo {}
