@@ -1,43 +1,41 @@
-use crate::Reactor;
 use crate::dummy_mutex::DummyMutex;
 use crate::io::Handle;
+use crate::Reactor;
 
 use async_lock::OnceCell;
 use futures::task::{self, ArcWake};
 
-use mio::event::{Event, Source};
+use mio::event::Source;
 use mio::{Interest, Registry, Token};
 
-use std::cell::RefCell;
 use std::future::Future;
 use std::pin::Pin;
 
-use std::sync::Arc;
 use std::sync::mpmc::{self, Receiver, Sender};
+use std::sync::Arc;
 use std::task::{Context, Poll};
 
 use std::io::Result as IoResult;
 use std::thread;
-use std::thread_local;
 
 // Convenience type for the Futures used by the Runtime.
-type RuntimeFuture<T> = Pin<Box<dyn Future + Send>>;
+type RuntimeFuture = Pin<Box<dyn Future<Output = ()> + Send>>;
 
 // Convenience function to make a new Task wrapped in an Arc<T>
-fn make_arc_task<F>(future: F, sender: Sender<Arc<Task<T>>>) -> Arc<Task>
+fn make_arc_task<F>(future: F, sender: Sender<Arc<Task>>) -> Arc<Task>
 where
-    F: Future + Send + 'static,
+    F: Future<Output = ()> + Send + 'static,
 {
     Arc::new(Task::new(FutureTask::new(Box::pin(future)), sender))
 }
 
-struct FutureTask<T> {
-    poll: Poll<T>,
-    ft: RuntimeFuture<T>,
+struct FutureTask {
+    poll: Poll<()>,
+    ft: RuntimeFuture,
 }
 
-impl<T> FutureTask<T> {
-    fn new(f: RuntimeFuture<T>) -> FutureTask<T> {
+impl FutureTask {
+    fn new(f: RuntimeFuture) -> FutureTask {
         FutureTask {
             poll: Poll::Pending,
             ft: f,
@@ -50,17 +48,17 @@ impl<T> FutureTask<T> {
     }
 }
 
-struct Task<T> {
-    taskft: DummyMutex<FutureTask<T>>,
-    exec: Sender<Arc<Task<T>>>,
+struct Task {
+    taskft: DummyMutex<FutureTask>,
+    exec: Sender<Arc<Task>>,
 }
 
-impl<T> Task<T> {
-    fn new(tsft: FutureTask<T>, exec: Sender<Arc<Task>>) -> Task<T> {
+impl Task {
+    fn new(tsft: FutureTask, exec: Sender<Arc<Task>>) -> Task {
         let taskft = DummyMutex::new(tsft);
         Task { taskft, exec }
     }
-    fn send(self: &Arc<Self>) -> Result<(), mpmc::SendError<Arc<Task<T>>>> {
+    fn send(self: &Arc<Self>) -> Result<(), mpmc::SendError<Arc<Task>>> {
         self.exec.send(self.clone())
     }
 
@@ -118,13 +116,11 @@ impl Runtime {
             // Stuff to be borrowed into the threads
             let receiver = runtime.receiver.clone();
 
-            thread::spawn(move || {
-                loop {
-                    println!("Task loop!!!!");
-                    match receiver.recv() {
-                        Ok(task) => task.poll(),
-                        Err(e) => panic!("{}", e),
-                    }
+            thread::spawn(move || loop {
+                println!("Task loop!!!!");
+                match receiver.recv() {
+                    Ok(task) => task.poll(),
+                    Err(e) => panic!("{}", e),
                 }
             });
 

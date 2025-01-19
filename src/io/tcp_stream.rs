@@ -1,12 +1,11 @@
 use super::reactor::Direction;
 use crate::Reactor;
 
-use futures::Future;
-use mio::Token;
 use mio::event::Source;
 use mio::net;
-use std::io::{self, Read, Write};
-use std::marker::PhantomPinned;
+use mio::Token;
+use std::future::Future;
+use std::io::{self, Read};
 use std::pin::Pin;
 use std::sync::atomic::AtomicBool;
 use std::task::{Context, Poll};
@@ -19,16 +18,16 @@ pub struct ReadFuture<'o> {
 }
 
 impl<'o> Future for ReadFuture<'o> {
-    type Output = io::Result<usize>;
+    type Output = ();
 
-    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<usize>> {
+    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         let mut buf1: [u8; 10] = [0u8; 10];
         let mut fut = self.as_mut();
 
         match fut.io.read(&mut buf1) {
-            Ok(size) => {
+            Ok(_size) => {
                 println!("buf: {:#?}", buf1);
-                Poll::Ready(Ok(size))
+                Poll::Ready(())
             }
 
             Err(e) if e.kind() == io::ErrorKind::WouldBlock => {
@@ -38,7 +37,7 @@ impl<'o> Future for ReadFuture<'o> {
                 Poll::Pending
             }
 
-            Err(e) => Poll::Ready(Err(e)),
+            Err(_e) => Poll::Ready(()),
         }
     }
 }
@@ -68,10 +67,7 @@ impl TcpStream {
     }
 
     /// ASYNC READ
-    pub fn async_read<'a>(
-        &'a mut self,
-        buf: &'a mut [u8],
-    ) -> impl Future<Output = io::Result<usize>> {
+    pub fn async_read<'a>(&'a mut self, buf: &'a mut [u8]) -> impl Future<Output = ()> + 'a {
         ReadFuture {
             io: &mut self.io,
             buf,
