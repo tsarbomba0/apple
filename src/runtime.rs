@@ -1,6 +1,7 @@
-use super::asyncio::io_reactor::IoReactor;
-use crate::asyncio::io_reactor::Handle;
+use crate::Reactor;
 use crate::dummy_mutex::DummyMutex;
+use crate::io::Handle;
+
 use async_lock::OnceCell;
 use futures::task::{self, ArcWake};
 
@@ -11,38 +12,32 @@ use std::cell::RefCell;
 use std::future::Future;
 use std::pin::Pin;
 
-use std::sync::mpmc::{self, Receiver, Sender};
 use std::sync::Arc;
+use std::sync::mpmc::{self, Receiver, Sender};
 use std::task::{Context, Poll};
 
 use std::io::Result as IoResult;
 use std::thread;
 use std::thread_local;
 
-// Static variable for the Sender part of the channel
-// used by the Runtime.
-thread_local! {
-    static SENDER: RefCell<Option<Sender<Arc<Task>>>> = RefCell::new(None);
-}
-
 // Convenience type for the Futures used by the Runtime.
-type RuntimeFuture = Pin<Box<dyn Future<Output = ()> + Send>>;
+type RuntimeFuture<T> = Pin<Box<dyn Future + Send>>;
 
 // Convenience function to make a new Task wrapped in an Arc<T>
-fn make_arc_task<F>(future: F, sender: Sender<Arc<Task>>) -> Arc<Task>
+fn make_arc_task<F>(future: F, sender: Sender<Arc<Task<T>>>) -> Arc<Task>
 where
-    F: Future<Output = ()> + Send + 'static,
+    F: Future + Send + 'static,
 {
     Arc::new(Task::new(FutureTask::new(Box::pin(future)), sender))
 }
 
-struct FutureTask {
-    poll: Poll<()>,
-    ft: RuntimeFuture,
+struct FutureTask<T> {
+    poll: Poll<T>,
+    ft: RuntimeFuture<T>,
 }
 
-impl FutureTask {
-    fn new(f: RuntimeFuture) -> FutureTask {
+impl<T> FutureTask<T> {
+    fn new(f: RuntimeFuture<T>) -> FutureTask<T> {
         FutureTask {
             poll: Poll::Pending,
             ft: f,
@@ -55,24 +50,22 @@ impl FutureTask {
     }
 }
 
-struct Task {
-    taskft: DummyMutex<FutureTask>,
-    exec: Sender<Arc<Task>>,
+struct Task<T> {
+    taskft: DummyMutex<FutureTask<T>>,
+    exec: Sender<Arc<Task<T>>>,
 }
 
-impl Task {
-    fn new(tsft: FutureTask, exec: Sender<Arc<Task>>) -> Task {
+impl<T> Task<T> {
+    fn new(tsft: FutureTask<T>, exec: Sender<Arc<Task>>) -> Task<T> {
         let taskft = DummyMutex::new(tsft);
         Task { taskft, exec }
     }
-    fn send(self: &Arc<Self>) -> Result<(), mpmc::SendError<Arc<Task>>> {
+    fn send(self: &Arc<Self>) -> Result<(), mpmc::SendError<Arc<Task<T>>>> {
         self.exec.send(self.clone())
     }
-    // Somehow implement a variable waker?
+
     fn poll(self: Arc<Self>) {
         if self.taskft.poll.is_pending() {
-            // TODO: Make my own waker, so i can wake the task
-            // from the i/o driver
             let waker = task::waker(self.clone());
             let mut cx = Context::from_waker(&waker);
             self.taskft.get_mut().poll(&mut cx)
@@ -81,8 +74,11 @@ impl Task {
 }
 
 impl ArcWake for Task {
-    fn wake_by_ref(aself: &Arc<Self>) {
-        aself.send();
+    fn wake_by_ref(arc_self: &Arc<Self>) {
+        match arc_self.send() {
+            Ok(_) => {}
+            Err(e) => panic!("{}", e),
+        }
     }
 }
 
@@ -92,12 +88,8 @@ pub struct Runtime {
     receiver: Receiver<Arc<Task>>,
     sender: Sender<Arc<Task>>,
 
-    /// Sending events to threads
-    poll_rcv: Receiver<Event>,
-    poll_snd: Sender<Event>,
-
     /// I/O Driver and handle.
-    driver: IoReactor<'static>,
+    driver: Reactor,
     handle: Arc<Handle>,
 }
 
@@ -106,66 +98,50 @@ impl Runtime {
         // Sender and Receiver channel for the Tasks
         let (sd, rc) = mpmc::channel();
 
-        // Sender and Receiver channel for Events
-        let (poll_snd, poll_rcv) = mpmc::channel();
-
-        // Thread local variable to hold the Runtime.
-        //thread_local! {
+        // Global variable to hold the Runtime.
         static RUNTIME: OnceCell<Runtime> = OnceCell::new();
-        //}
 
         // Acquires the reference to the OnceCell<T> in the static variable
         // and initializes it with the Runtime
-        //RUNTIME.with(|runtime| {
         RUNTIME.get_or_init_blocking(|| {
             // Driver and it's handle
-            let (driver, handle) = IoReactor::new();
-            // Reactor
-            let reactor = Runtime {
+            let driver = Reactor::new();
+
+            // Runtime
+            let runtime = Runtime {
                 receiver: rc,
                 sender: sd,
-                poll_rcv,
-                poll_snd,
-                driver,
-                handle,
+                driver: driver.0,
+                handle: Arc::clone(&driver.1),
             };
 
             // Stuff to be borrowed into the threads
-            let receiver = reactor.receiver.clone();
-            //let sender = reactor.poll_snd.clone();
+            let receiver = runtime.receiver.clone();
 
-            // This can be solved by using Arc<Mutex<T>>
-            // probably
-            thread::spawn(|| loop {
-                reactor.driver.poll_events();
-            });
-
-            thread::scope(|s| {
-                // Thread for polling tasks.
-                s.spawn(move || {
-                    while let Ok(task) = receiver.recv() {
-                        task.poll();
+            thread::spawn(move || {
+                loop {
+                    println!("Task loop!!!!");
+                    match receiver.recv() {
+                        Ok(task) => task.poll(),
+                        Err(e) => panic!("{}", e),
                     }
-                });
+                }
             });
 
-            reactor
-            //})
+            runtime
         })
     }
 
     /// Spawns a task onto the Runtime.
-    pub fn spawn<F>(task: F)
+    pub fn spawn<'a, F>(task: F)
     where
         F: Future<Output = ()> + Send + 'static,
     {
-        SENDER
-            .with(|runtime| {
-                let borrow = runtime.borrow();
-                let unwrap = borrow.as_ref().unwrap();
-                unwrap.send(make_arc_task(task, unwrap.clone()))
-            })
-            .unwrap();
+        println!("Spawned a task!");
+        let sender = Runtime::get().sender.clone();
+        sender
+            .send(make_arc_task(task, sender.clone()))
+            .expect("failed to send task to runtime!")
     }
 
     // register device
@@ -177,11 +153,6 @@ impl Runtime {
 
     /// Get registry.
     pub fn registry() -> &'static Registry {
-        &Runtime::get().handle.get_registry()
-    }
-
-    // Get the channel for receiving events.
-    pub fn get_event_chan() -> Receiver<Event> {
-        Runtime::get().poll_rcv.clone()
+        Runtime::get().handle.registry()
     }
 }

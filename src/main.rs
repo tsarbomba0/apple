@@ -1,24 +1,35 @@
 #![feature(mpmc_channel)]
-mod asyncio;
-use asyncio::async_tcp::AsyncTcpStream;
-use asyncio::traits::AsyncRead;
-mod delay_future;
+
 mod dummy_mutex;
-mod runtime;
-mod tcp_stream;
+mod io;
+use crate::io::TcpStream;
+use io::Reactor;
 use mio::Interest;
+mod runtime;
+use futures::Future;
 use runtime::Runtime;
+use std::pin::pin;
 
 fn main() {
-    let runtime = Runtime::get();
-    let reg = Runtime::registry();
-    let mut tcp = AsyncTcpStream::new("127.0.0.1:8000", 3).unwrap();
-    tcp.reg(reg, Interest::READABLE | Interest::WRITABLE);
+    Runtime::get();
+    println!("Wersal!");
+    let mut stream = TcpStream::new("127.0.0.1:8011", 1).expect("tcp socket fail");
 
-    let future = tcp.read();
-    Runtime::spawn(future);
+    Reactor::register(&mut stream, Interest::READABLE | Interest::WRITABLE).expect("register fail");
+    let mut buf = vec![];
+    let fut = stream.async_read(&mut buf);
 
-    loop {
-        std::thread::sleep(std::time::Duration::from_secs(1))
-    }
+    // let fut1 = async move {
+    //     let mut buf = vec![];
+    //     let a = stream.async_read(&mut buf).await;
+    //     println!("{:?}", a);
+    // };
+    // let fut2 = async move {
+    //     let mut buf = vec![];
+    //     let a = stream.async_read(&mut buf).await;
+    //     println!("{:?}", a);
+    // };
+    Runtime::spawn(fut);
+
+    loop {}
 }
