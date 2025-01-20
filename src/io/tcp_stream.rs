@@ -1,47 +1,80 @@
+// crate imports
 use super::reactor::Direction;
+use crate::io::{AsyncRead, AsyncWrite};
 use crate::Reactor;
 
+// Mio imports
 use mio::event::Source;
 use mio::net;
 use mio::Token;
+
+/// std imports
 use std::future::Future;
-use std::io::{self, Read};
+use std::io::{self, Read, Write};
 use std::pin::Pin;
 use std::sync::atomic::AtomicBool;
 use std::task::{Context, Poll};
 
+/// Future representing the operation of reading from a `TcpStream`.
 pub struct ReadFuture<'o> {
-    io: &'o mut net::TcpStream,
+    io: &'o net::TcpStream,
     buf: &'o mut [u8],
     token: Token,
-    //_pin: PhantomPinned,
 }
 
 impl<'o> Future for ReadFuture<'o> {
-    type Output = ();
+    type Output = io::Result<usize>;
 
     fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         let mut buf1: [u8; 10] = [0u8; 10];
         let mut fut = self.as_mut();
 
         match fut.io.read(&mut buf1) {
-            Ok(_size) => {
+            Ok(size) => {
                 println!("buf: {:#?}", buf1);
-                Poll::Ready(())
+                Poll::Ready(Ok(size))
             }
 
             Err(e) if e.kind() == io::ErrorKind::WouldBlock => {
-                println!("Would block, task gives a waker!");
+                println!("Would block, attaching waker (Read)!");
                 Reactor::attach_waker(cx, self.token, Direction::Read);
 
                 Poll::Pending
             }
 
-            Err(_e) => Poll::Ready(()),
+            Err(e) => Poll::Ready(Err(e)),
         }
     }
 }
 
+/// Future representing the operation of writing to a `TcpStream`.
+pub struct WriteFuture<'o> {
+    io: &'o net::TcpStream,
+    buf: &'o [u8],
+    token: Token,
+}
+
+impl Future for WriteFuture<'_> {
+    type Output = io::Result<usize>;
+
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        let pin_self = self.get_mut();
+        match pin_self.io.write(pin_self.buf) {
+            Err(e) if e.kind() == io::ErrorKind::WouldBlock => {
+                println!(
+                    "Would block, attaching waker (Write) for Token: {}!",
+                    pin_self.token.0
+                );
+                Reactor::attach_waker(cx, pin_self.token, Direction::Write);
+                Poll::Pending
+            }
+            Err(e) => Poll::Ready(Err(e)),
+            Ok(size) => Poll::Ready(Ok(size)),
+        }
+    }
+}
+
+/// TCP Socket connected to a listener.
 pub struct TcpStream {
     io: mio::net::TcpStream,
     token: Token,
@@ -49,7 +82,9 @@ pub struct TcpStream {
     write: AtomicBool,
 }
 
+/// Impl TcpStream
 impl TcpStream {
+    /// Create a new TcpStream.
     pub fn new(addr: &str, tkn: usize) -> io::Result<TcpStream> {
         let address = match addr.parse() {
             Ok(o) => o,
@@ -65,22 +100,87 @@ impl TcpStream {
             write: AtomicBool::new(true),
         })
     }
+}
 
-    /// ASYNC READ
-    pub fn async_read<'a>(&'a mut self, buf: &'a mut [u8]) -> impl Future<Output = ()> + 'a {
+impl AsyncRead for TcpStream {
+    /// Read x amount of bytes from this socket.
+    /// It's asynchronous woo!!
+    fn async_read<'a>(
+        &'a mut self,
+        buf: &'a mut [u8],
+    ) -> impl Future<Output = io::Result<usize>> + 'a {
         ReadFuture {
             io: &mut self.io,
             buf,
-            token: self.token.clone(),
-            //_pin: PhantomPinned,
+            token: self.token,
         }
     }
 }
 
-impl<'a> io::Read for &'a TcpStream {
+impl AsyncRead for &TcpStream {
+    /// Read x amount of bytes into `buf` from this socket asychronously.
+    /// Returns a `Future` with `io::Result<usize>` as it's Output type.
+    fn async_read<'a>(
+        &'a mut self,
+        buf: &'a mut [u8],
+    ) -> impl Future<Output = io::Result<usize>> + 'a {
+        ReadFuture {
+            io: &self.io,
+            buf,
+            token: self.token,
+        }
+    }
+}
+
+impl AsyncWrite for TcpStream {
+    /// Writes x amount of bytes from `buf` to this socket asychronously
+    /// Returns a `Future` with `io::Result<usize>` as it's Output type.
+    fn async_write<'a>(
+        &'a mut self,
+        buf: &'a [u8],
+    ) -> impl Future<Output = io::Result<usize>> + 'a {
+        WriteFuture {
+            io: &self.io,
+            buf,
+            token: self.token,
+        }
+    }
+}
+
+impl AsyncWrite for &TcpStream {
+    /// Writes x amount of bytes from `buf` to this asychronously
+    /// Returns a `Future` with `io::Result<usize>` as it's Output type
+    fn async_write<'a>(
+        &'a mut self,
+        buf: &'a [u8],
+    ) -> impl Future<Output = io::Result<usize>> + 'a {
+        WriteFuture {
+            io: &self.io,
+            buf,
+            token: self.token,
+        }
+    }
+}
+
+impl io::Read for &TcpStream {
+    /// Works by calling the underlying `io`'s `read` function.
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
         let mut io = &self.io;
         io.read(buf)
+    }
+}
+
+impl io::Write for &TcpStream {
+    /// Works by calling the underlying `io`'s `write` function.
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        let mut io = &self.io;
+        io.write(buf)
+    }
+
+    /// Works by calling the underlying `io`'s `flush` function.
+    fn flush(&mut self) -> io::Result<()> {
+        let mut io = &self.io;
+        io.flush()
     }
 }
 

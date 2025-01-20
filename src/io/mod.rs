@@ -5,3 +5,7 @@ pub use reactor::{Handle, Reactor};
 pub mod tcp_stream;
 pub use std::future::Future;
 pub use tcp_stream::TcpStream;
+pub mod async_read;
+pub use async_read::AsyncRead;
+pub mod async_write;
+pub use async_write::AsyncWrite;

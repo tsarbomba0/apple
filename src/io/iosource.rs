@@ -1,3 +1,4 @@
+use mio::event::Event;
 use mio::Token;
 use std::task::Waker;
 
@@ -15,6 +16,22 @@ impl IoSource {
             write_waker: None,
             token: Token(token),
         }
+    }
+
+    pub fn has_wakers(&self) -> bool {
+        self.read_waker.is_some() || self.write_waker.is_some()
+    }
+
+    pub fn wake_with_event(&self, ev: &Event) {
+        if let (true, Some(waker)) = (ev.is_readable(), &self.read_waker) {
+            waker.wake_by_ref();
+        }
+
+        if let (true, Some(waker)) = (ev.is_writable(), &self.write_waker) {
+            waker.wake_by_ref();
+        }
+
+        // todo: handle closing and stuff
     }
 
     pub fn change_read_waker(&mut self, waker: &Waker) {

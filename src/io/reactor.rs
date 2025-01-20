@@ -6,7 +6,7 @@ use mio::{Events, Interest, Poll, Registry, Token};
 use slab::Slab;
 use std::io::Result as IoResult;
 use std::sync::{Arc, Mutex};
-use std::task::{Context, Poll as TaskPoll};
+use std::task::Context;
 
 /// represents the interest of the underlying io.
 pub enum Direction {
@@ -25,7 +25,7 @@ pub struct Reactor {
     handle: Arc<Handle>,
 
     /// I/O sources
-    sources: Mutex<Slab<IoSource>>,
+    sources: Arc<Mutex<Slab<IoSource>>>,
 }
 
 /// Handle to the I/O Reactor.
@@ -56,7 +56,7 @@ impl Reactor {
         let poll = Poll::new().expect("poll create fail");
         let events = Arc::new(Mutex::new(Events::with_capacity(1024)));
         let registry = poll.registry().try_clone().expect("registry clone fail");
-        let sources = Mutex::new(Slab::with_capacity(1024));
+        let sources = Arc::new(Mutex::new(Slab::with_capacity(1024)));
 
         let handle = Handle::arc_new(registry, poll);
         let r = Reactor {
@@ -77,6 +77,8 @@ impl Reactor {
 
             // Polling thread
             let arc_events = Arc::clone(&reactor.events);
+            let arc_sources = Arc::clone(&reactor.sources);
+
             std::thread::spawn(move || {
                 let mut poll = handle.poll.lock().expect("failed loop poll lock");
                 let mut events = arc_events.lock().expect("event lock fail");
@@ -88,7 +90,20 @@ impl Reactor {
                     }
 
                     for event in events.iter() {
-                        println!("{:?}", event)
+                        println!("{:?}", event);
+                        let srcs = arc_sources.lock().expect("sources lock in loop failed!");
+
+                        let src = match srcs.get(event.token().0) {
+                            None => panic!(
+                                "Received event for token {}, but no such source is present.",
+                                event.token().0
+                            ),
+                            Some(source) => source,
+                        };
+
+                        if src.has_wakers() {
+                            src.wake_with_event(event)
+                        }
                     }
                 }
             });
@@ -111,8 +126,7 @@ impl Reactor {
             .registry
             .register(src, Token(token), interest)?;
 
-        sources.insert(IoSource::new(token));
-
+        let _key = sources.insert(IoSource::new(token));
         Ok(())
     }
 
@@ -122,8 +136,6 @@ impl Reactor {
         Reactor::get_handle()
             .registry
             .reregister(src, Token(token), intr)
-
-        // smth to change sources slab
     }
 
     pub fn attach_waker(cx: &mut Context<'_>, token: Token, dir: Direction) {

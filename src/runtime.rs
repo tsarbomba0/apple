@@ -73,6 +73,7 @@ impl Task {
 
 impl ArcWake for Task {
     fn wake_by_ref(arc_self: &Arc<Self>) {
+        println!("ArcWaking the task!");
         match arc_self.send() {
             Ok(_) => {}
             Err(e) => panic!("{}", e),
@@ -129,11 +130,10 @@ impl Runtime {
     }
 
     /// Spawns a task onto the Runtime.
-    pub fn spawn<'a, F>(task: F)
+    pub fn spawn<F>(task: F)
     where
         F: Future<Output = ()> + Send + 'static,
     {
-        println!("Spawned a task!");
         let sender = Runtime::get().sender.clone();
         sender
             .send(make_arc_task(task, sender.clone()))
