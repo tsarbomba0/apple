@@ -10,3 +10,8 @@ Haha! Nice dreams.
 ## IT'S BAD!!!
 It's bad but it arguably works.
 
+## Goals
+- Handles
+- Multi-threading
+- idk...
+
