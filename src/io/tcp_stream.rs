@@ -22,22 +22,18 @@ pub struct ReadFuture<'o> {
     token: Token,
 }
 
-impl<'o> Future for ReadFuture<'o> {
+impl Future for ReadFuture<'_> {
     type Output = io::Result<usize>;
 
-    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        let mut buf1: [u8; 10] = [0u8; 10];
-        let mut fut = self.as_mut();
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        let future = self.get_mut();
 
-        match fut.io.read(&mut buf1) {
-            Ok(size) => {
-                println!("buf: {:#?}", buf1);
-                Poll::Ready(Ok(size))
-            }
+        match future.io.read(future.buf) {
+            Ok(size) => Poll::Ready(Ok(size)),
 
             Err(e) if e.kind() == io::ErrorKind::WouldBlock => {
                 println!("Would block, attaching waker (Read)!");
-                Reactor::attach_waker(cx, self.token, Direction::Read);
+                Reactor::attach_waker(cx, future.token, Direction::Read);
 
                 Poll::Pending
             }

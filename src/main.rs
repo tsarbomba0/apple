@@ -2,6 +2,7 @@
 
 mod dummy_mutex;
 mod io;
+mod task_handle;
 use crate::io::TcpStream;
 use io::Reactor;
 use mio::Interest;
@@ -9,45 +10,44 @@ mod runtime;
 use crate::io::{AsyncRead, AsyncWrite};
 use runtime::Runtime;
 
+fn sleep_for_n_sec(n: u64) {
+    std::thread::sleep(std::time::Duration::from_secs(n))
+}
 fn main() {
     Runtime::get();
     println!("Wersal!");
     Runtime::spawn(async_main());
-    loop {}
+    loop {
+        std::thread::sleep(std::time::Duration::from_millis(500))
+    }
 }
 
 async fn async_main() {
     let mut stream = TcpStream::new("127.0.0.1:8011", 0).expect("tcp socket fail");
 
-    let buf = [1u8; 5];
-    let mut buf1 = [1u8; 5];
+    let rbuf = [5, 4, 3, 2, 1];
+    let mut buf = [1u8; 5];
 
     Reactor::register(&mut stream, Interest::READABLE | Interest::WRITABLE).expect("register fail");
-    let fut = stream.async_read(&mut buf1).await;
-    let fut_w = stream.async_write(&buf).await;
+    let handle = Runtime::spawn(async move {
+        let fut = stream.async_read(&mut buf);
+        fut.await.expect("Failed reading!");
+        println!("Buffer after read: {:#?}\n", buf.clone());
 
-    let mut stream1 = TcpStream::new("127.0.0.1:8011", 1).expect("tcp socket fail");
+        let fut_w = stream.async_write(&rbuf);
+        fut_w.await.expect("Failed writing!");
+        println!("Writing done!");
+    });
 
-    Reactor::register(&mut stream1, Interest::READABLE | Interest::WRITABLE)
-        .expect("register fail");
-    let fut1 = stream1.async_read(&mut buf1).await;
-    let fut1_w = stream1.async_write(&buf).await;
+    println!("Meow!");
+    sleep_for_n_sec(5);
 
-    let mut stream2 = TcpStream::new("127.0.0.1:8011", 2).expect("tcp socket fail");
+    handle.await;
 
-    Reactor::register(&mut stream2, Interest::READABLE | Interest::WRITABLE)
-        .expect("register fail");
-    let fut2 = stream2.async_read(&mut buf1).await;
-    let fut2_w = stream2.async_write(&buf).await;
+    println!("Meow 2!")
 
-    // let fut1 = async move {
-    //     let mut buf = vec![];
-    //     let a = stream.async_read(&mut buf).await;
-    //     println!("{:?}", a);
-    // };
-    // let fut2 = async move {
-    //     let mut buf = vec![];
-    //     let a = stream.async_read(&mut buf).await;
-    //     println!("{:?}", a);
-    // };
+    // loop {
+    //     println!("I am going to do this each second, haha!");
+    //     sleep_for_n_sec(1)
+    // }
 }
