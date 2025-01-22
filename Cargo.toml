@@ -1,5 +1,5 @@
 [package]
-name = "mio-tls-http"
+name = "apple"
 version = "0.1.0"
 edition = "2021"
 
@@ -7,7 +7,4 @@ edition = "2021"
 async-lock = "3.4.0"
 futures = "0.3.31"
 mio = { version = "1.0.3", features = ["os-poll", "net"]}
-rustls = "0.23.20"
-rustls-pki-types = "1.10.1"
 slab = "0.4.9"
-webpki-roots = "0.26.7"

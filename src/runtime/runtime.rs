@@ -1,20 +1,19 @@
-use crate::dummy_mutex::DummyMutex;
 use crate::io::Handle;
-use crate::task_handle::TaskHandle;
-use crate::Reactor;
+use crate::io::Reactor;
+use crate::runtime::MutCell;
+use crate::runtime::TaskHandle;
 
 use async_lock::OnceCell;
 use futures::task::{self, ArcWake};
 
 use mio::event::Source;
-use mio::{Interest, Registry, Token};
+use mio::{Interest, Registry};
 
-use std::collections::HashMap;
 use std::future::Future;
 use std::pin::Pin;
 
 use std::sync::mpmc::{self, Receiver, Sender};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::task::{Context, Poll, Waker};
 
 use std::io::Result as IoResult;
@@ -50,24 +49,31 @@ impl FutureTask {
 
 /// Task struct used by the Runtime
 pub struct Task {
-    taskft: DummyMutex<FutureTask>,
-    exec: Sender<TaskRelated>,
-    handle_waker: Mutex<Option<Waker>>,
+    taskft: MutCell<FutureTask>,
+    exec: Sender<Arc<Task>>,
+    waker: MutCell<Waker>,
+}
+
+impl std::ops::Drop for Task {
+    fn drop(&mut self) {
+        println!("Dropped a task!");
+        self.waker.get().wake_by_ref();
+    }
 }
 
 impl Task {
     /// Creates a new `Task` from a `Sender<TaskRelated>` and a `FutureTask`
-    fn new(tsft: FutureTask, exec: Sender<TaskRelated>) -> Task {
-        let taskft = DummyMutex::new(tsft);
+    fn new(tsft: FutureTask, exec: Sender<Arc<Task>>) -> Task {
+        let taskft = unsafe { MutCell::new(tsft) };
         Task {
             taskft,
             exec,
-            handle_waker: Mutex::new(None),
+            waker: unsafe { MutCell::new(Waker::noop().clone()) },
         }
     }
 
     /// Convenience function to create a `Arc<Task>` from a type implementing `Future<Output = ()> + Send + 'static`
-    fn arc_new<F>(future: F, sender: Sender<TaskRelated>) -> Arc<Task>
+    fn arc_new<F>(future: F, sender: Sender<Arc<Task>>) -> Arc<Task>
     where
         F: Future<Output = ()> + Send + 'static,
     {
@@ -77,8 +83,15 @@ impl Task {
     }
 
     /// Sends the `Task` to the Runtime
-    fn send(self: &Arc<Self>) -> Result<(), mpmc::SendError<TaskRelated>> {
-        self.exec.send(TaskRelated::Task(self.clone()))
+    fn send(self: &Arc<Self>) -> Result<(), mpmc::SendError<Arc<Task>>> {
+        self.exec.send(self.clone())
+    }
+
+    pub(crate) fn change_waker(self: &Arc<Self>, waker: &Waker) {
+        if !self.waker.will_wake(waker) {
+            // Safety: Only one thread will access this.
+            unsafe { *self.waker.get_mut() = waker.clone() }
+        }
     }
 
     /// Polls the internal `FutureTask`
@@ -87,17 +100,14 @@ impl Task {
             let waker = task::waker(self.clone());
             let mut cx = Context::from_waker(&waker);
 
-            self.taskft.get_mut().poll(&mut cx)
+            // Safety:
+            // This will let only 1 thread access this mutably.
+            unsafe { self.taskft.get_mut().poll(&mut cx) };
         }
     }
 
-    /// Convenience function to get the handle_waker field from a `Task`
-    pub(crate) fn get_waker(&self) -> &Mutex<Option<Waker>> {
-        &self.handle_waker
-    }
-
     /// Checks if the Task is Pending or Ready
-    pub(crate) fn ready(self: Arc<Task>) -> bool {
+    pub(crate) fn ready(self: &Arc<Task>) -> bool {
         !self.taskft.poll.is_pending()
     }
 }
@@ -112,24 +122,15 @@ impl ArcWake for Task {
     }
 }
 
-/// Enum generalising the Task and TaskHandle types to let them be used without a `match` statement
-pub enum TaskRelated {
-    Task(Arc<Task>),
-    Handle(Arc<TaskHandle>),
-}
-
 /// Async runtime.
 pub struct Runtime {
     /// Channels to send and receive tasks
-    receiver: Receiver<TaskRelated>,
-    sender: Sender<TaskRelated>,
+    receiver: Receiver<Arc<Task>>,
+    sender: Sender<Arc<Task>>,
 
     /// I/O Driver and handle.
     driver: Reactor,
     handle: Arc<Handle>,
-
-    /// Hashmap mapping `Arc<Task>` and their ids,
-    map: HashMap<usize, Arc<Task>>,
 }
 
 impl Runtime {
@@ -152,7 +153,6 @@ impl Runtime {
                 sender: sd,
                 driver: driver.0,
                 handle: Arc::clone(&driver.1),
-                map: HashMap::with_capacity(1024),
             };
 
             // Stuff to be borrowed into the threads
@@ -160,15 +160,12 @@ impl Runtime {
 
             thread::spawn(move || loop {
                 println!("Task loop!!!!");
-                let task_related = match receiver.recv() {
+                let task = match receiver.recv() {
                     Ok(task_related) => task_related,
                     Err(e) => panic!("{}", e),
                 };
 
-                match task_related {
-                    TaskRelated::Task(task) => task.poll(),
-                    TaskRelated::Handle(handle) => handle.handle_poll(),
-                }
+                task.poll();
             });
 
             runtime
@@ -182,20 +179,23 @@ impl Runtime {
     {
         let sender = Runtime::get().sender.clone();
         let task = Task::arc_new(future, sender.clone());
-        let handle = TaskHandle::new(sender.clone());
+        let handle = TaskHandle::new(Arc::downgrade(&task));
 
-        sender
-            .send(TaskRelated::Task(task))
-            .expect("failed to send task to runtime!");
+        sender.send(task).expect("failed to send task to runtime!");
 
         handle
     }
 
-    // register device
-    pub fn register(dev: &mut impl Source, token: Token, interest: Interest) -> IoResult<()> {
-        let reg = Runtime::registry();
+    /// Register device in the I/O Reactor's registry
+    /// Essentially it is just `Reactor::register`
+    pub fn register(dev: &mut impl Source, interest: Interest) -> IoResult<()> {
+        Reactor::register(dev, interest)
+    }
 
-        reg.register(dev, token, interest)
+    /// Reregister device in the I/O Reactor's registry
+    /// Essentially it is just `Reactor::reregister`
+    pub fn reregister(src: &mut impl Source, token: usize, interest: Interest) -> IoResult<()> {
+        Reactor::reregister(src, token, interest)
     }
 
     /// Get registry.

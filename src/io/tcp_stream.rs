@@ -1,7 +1,7 @@
 // crate imports
 use super::reactor::Direction;
+use crate::io::Reactor;
 use crate::io::{AsyncRead, AsyncWrite};
-use crate::Reactor;
 
 // Mio imports
 use mio::event::Source;
