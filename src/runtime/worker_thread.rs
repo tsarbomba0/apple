@@ -8,6 +8,7 @@ use std::marker::PhantomData;
 use std::sync::{mpsc, Arc};
 use std::thread::{self, available_parallelism};
 
+/// Describes a thread of the Runtime.
 pub struct WorkerThread {
     name: Option<String>,
     sender: mpsc::Sender<Arc<Task>>,
@@ -19,19 +20,20 @@ pub struct WorkerThread {
 
 impl WorkerThread {
     /// Creates one `WorkerThread`
-    pub(crate) fn new(id: usize, name: Option<&str>) -> io::Result<WorkerThread> {
+    pub(crate) fn new(id: usize, name: Option<String>) -> io::Result<WorkerThread> {
         let (sender, recv) = mpsc::channel::<Arc<Task>>();
 
-        let _thread = thread::Builder::new();
-        if let Some(name) = name {
-            _thread.name(name.to_string())
-        }
+        let _thread = if let Some(ref n) = name {
+            thread::Builder::new().name(n.clone())
+        } else {
+            thread::Builder::new()
+        };
 
-        _thread.no_hooks().spawn(move || {
+        _thread.spawn(move || {
             while let Ok(task) = recv.recv() {
                 task.poll();
             }
-        });
+        })?;
 
         Ok(WorkerThread {
             name,
@@ -73,5 +75,9 @@ impl WorkerThread {
     pub fn send(&mut self, task: &Arc<Task>) {
         self.sender.send(Arc::clone(task));
         self.amount += 1;
+    }
+
+    pub fn get_amount_sent(&self) -> usize {
+        self.amount
     }
 }
