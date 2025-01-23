@@ -4,7 +4,7 @@ use std::pin::Pin;
 use std::sync::Weak;
 use std::task::{Context, Poll, Waker};
 
-pub struct TaskHandle {
+pub struct TaskHandle<T> {
     task: Weak<Task>,
 }
 
@@ -17,8 +17,8 @@ impl TaskHandle {
     }
 }
 
-impl Future for TaskHandle {
-    type Output = ();
+impl Future for TaskHandle<T> {
+    type Output = T;
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         let arc_task = match self.task.upgrade() {
             Some(a) => a,

@@ -18,39 +18,54 @@ use std::sync::{Arc, Mutex};
 use std::task::{Context, Poll, Waker};
 
 use std::io::Result as IoResult;
-use std::thread;
 
 // Convenience type for the Futures used by the Runtime.
-type RuntimeFuture = Pin<Box<dyn Future<Output = ()> + Send>>;
+type RuntimeFuture<T> = Pin<Box<dyn Future<Output = T> + Send>>;
 
-/// Underlying task for the `Task` struct.
-struct FutureTask {
-    poll: Poll<()>,
-    ft: RuntimeFuture,
+/// Trait for `FutureTask` so we can use different result values.
+trait FutureTaskTrait {
+    fn poll(&mut self, cx: &mut Context<'_>);
+    fn current_poll(&self) -> Poll<()>;
 }
 
-impl FutureTask {
+/// Underlying task for the `Task` struct.
+struct FutureTask<T> {
+    poll: Poll<()>,
+    ft: RuntimeFuture<T>,
+}
+
+impl<T> FutureTask<T> {
     /// Creates a new `FutureTask` with a type of `RuntimeFuture`
     /// `RuntimeFuture` is a type alias referring to `Pin<Box<dyn Future<Output = ()> + Send`
-    fn new(f: RuntimeFuture) -> FutureTask {
+    fn new(f: RuntimeFuture<T>) -> FutureTask<T> {
         FutureTask {
             poll: Poll::Pending,
             ft: f,
         }
     }
+}
 
+impl<T> FutureTaskTrait for FutureTask<T> {
     /// Polls the `Future` inside the `FutureTask`
     /// Only polls it if the poll returned earlier was `Poll::Pending`
     fn poll(&mut self, cx: &mut Context<'_>) {
         if self.poll.is_pending() {
-            self.poll = self.ft.as_mut().poll(cx)
+            let poll = self.ft.as_mut().poll(cx);
+            self.poll = match poll.is_ready() {
+                true => Poll::Ready(()),
+                false => Poll::Pending,
+            }
         }
+    }
+
+    fn current_poll(&self) -> Poll<()> {
+        self.poll
     }
 }
 
 /// Task struct used by the Runtime
 pub struct Task {
-    taskft: MutCell<FutureTask>,
+    taskft: MutCell<Box<dyn FutureTaskTrait + 'static>>,
     exec: Sender<Arc<Task>>,
     waker: MutCell<Waker>,
 }
@@ -64,7 +79,7 @@ impl std::ops::Drop for Task {
 
 impl Task {
     /// Creates a new `Task` from a `Sender<TaskRelated>` and a `FutureTask`
-    fn new(tsft: FutureTask, exec: Sender<Arc<Task>>) -> Task {
+    fn new(tsft: Box<dyn FutureTaskTrait + 'static>, exec: Sender<Arc<Task>>) -> Task {
         let taskft = unsafe { MutCell::new(tsft) };
         Task {
             taskft,
@@ -74,11 +89,11 @@ impl Task {
     }
 
     /// Convenience function to create a `Arc<Task>` from a type implementing `Future<Output = ()> + Send + 'static`
-    fn arc_new<F>(future: F, sender: Sender<Arc<Task>>) -> Arc<Task>
+    fn arc_new<F, T: 'static>(future: F, sender: Sender<Arc<Task>>) -> Arc<Task>
     where
-        F: Future<Output = ()> + Send + 'static,
+        F: Future<Output = T> + Send + 'static,
     {
-        let task = Task::new(FutureTask::new(Box::pin(future)), sender.clone());
+        let task = Task::new(Box::new(FutureTask::new(Box::pin(future))), sender.clone());
 
         Arc::new(task)
     }
@@ -97,7 +112,7 @@ impl Task {
 
     /// Polls the internal `FutureTask`
     pub(crate) fn poll(self: Arc<Self>) {
-        if self.taskft.poll.is_pending() {
+        if self.taskft.current_poll().is_pending() {
             let waker = task::waker(self.clone());
             let mut cx = Context::from_waker(&waker);
 
@@ -109,13 +124,12 @@ impl Task {
 
     /// Checks if the Task is Pending or Ready
     pub(crate) fn ready(self: &Arc<Task>) -> bool {
-        !self.taskft.poll.is_pending()
+        !self.taskft.current_poll().is_pending()
     }
 }
 
 impl ArcWake for Task {
     fn wake_by_ref(arc_self: &Arc<Self>) {
-        println!("ArcWaking the task!");
         match arc_self.send() {
             Ok(_) => {}
             Err(e) => panic!("{}", e),
@@ -153,7 +167,7 @@ impl Runtime {
             let driver = Reactor::new();
 
             // Runtime
-            let runtime = Runtime {
+            Runtime {
                 receiver: rc,
                 sender: sd,
 
@@ -161,16 +175,7 @@ impl Runtime {
                 handle: Arc::clone(&driver.1),
 
                 pool: Mutex::new(ThreadPool::new(threads)),
-            };
-
-            // Stuff to be borrowed into the threads
-            let receiver = runtime.receiver.clone();
-
-            // thread::spawn(move || loop {
-            //     println!("Task loop!!!!");
-            // });
-
-            runtime
+            }
         })
     }
 
@@ -203,9 +208,9 @@ impl Runtime {
     }
 
     /// Spawns a task onto the Runtime.
-    pub fn spawn<F>(future: F) -> TaskHandle
+    pub fn spawn<F, T: 'static>(future: F) -> TaskHandle<T>
     where
-        F: Future<Output = ()> + Send + 'static,
+        F: Future<Output = T> + Send + 'static,
     {
         let sender = Runtime::get().sender.clone();
         let task = Task::arc_new(future, sender);
