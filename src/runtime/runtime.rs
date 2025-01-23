@@ -166,15 +166,9 @@ impl Runtime {
             // Stuff to be borrowed into the threads
             let receiver = runtime.receiver.clone();
 
-            thread::spawn(move || loop {
-                println!("Task loop!!!!");
-                let task = match receiver.recv() {
-                    Ok(t) => t,
-                    Err(e) => panic!("{}", e),
-                };
-
-                task.poll();
-            });
+            // thread::spawn(move || loop {
+            //     println!("Task loop!!!!");
+            // });
 
             runtime
         })
@@ -185,6 +179,27 @@ impl Runtime {
     /// Panics if there is no runtime present.
     pub fn get() -> &'static Runtime {
         RUNTIME.get().expect("There is no runtime available!")
+    }
+
+    /// Initializes the runtime with a Future created from the `main` function.
+    pub fn init<F>(future: F)
+    where
+        F: Future<Output = ()> + Send + 'static,
+    {
+        let sender = &Runtime::get().sender;
+        let task = Task::arc_new(future, sender.clone());
+
+        sender.send(task).expect("failed to initialize runtime");
+
+        let receiver = &Runtime::get().receiver;
+        loop {
+            let task = match receiver.recv() {
+                Ok(t) => t,
+                Err(e) => panic!("{}", e),
+            };
+
+            task.poll();
+        }
     }
 
     /// Spawns a task onto the Runtime.

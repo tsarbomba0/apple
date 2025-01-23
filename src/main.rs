@@ -14,10 +14,7 @@ fn sleep_for_n_sec(n: u64) {
 
 fn main() {
     Runtime::build(4);
-    Runtime::spawn(async_main());
-    loop {
-        std::thread::sleep(std::time::Duration::from_millis(500))
-    }
+    Runtime::init(async_main());
 }
 
 async fn async_main() {
