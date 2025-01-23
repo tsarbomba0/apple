@@ -2,6 +2,7 @@ use crate::io::Handle;
 use crate::io::Reactor;
 use crate::runtime::MutCell;
 use crate::runtime::TaskHandle;
+use crate::runtime::ThreadPool;
 
 use async_lock::OnceCell;
 use futures::task::{self, ArcWake};
@@ -13,7 +14,7 @@ use std::future::Future;
 use std::pin::Pin;
 
 use std::sync::mpmc::{self, Receiver, Sender};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::task::{Context, Poll, Waker};
 
 use std::io::Result as IoResult;
@@ -131,15 +132,19 @@ pub struct Runtime {
     /// I/O Driver and handle.
     driver: Reactor,
     handle: Arc<Handle>,
+
+    /// Thread pool.
+    pool: Mutex<ThreadPool>,
 }
 
+// Global variable to hold the Runtime.
+static RUNTIME: OnceCell<Runtime> = OnceCell::new();
+
 impl Runtime {
-    pub fn get() -> &'static Runtime {
+    /// Builds the global Runtime instance.
+    pub fn build(threads: usize) -> &'static Runtime {
         // Sender and Receiver channel for the Tasks
         let (sd, rc) = mpmc::channel();
-
-        // Global variable to hold the Runtime.
-        static RUNTIME: OnceCell<Runtime> = OnceCell::new();
 
         // Acquires the reference to the OnceCell<T> in the static variable
         // and initializes it with the Runtime
@@ -151,8 +156,11 @@ impl Runtime {
             let runtime = Runtime {
                 receiver: rc,
                 sender: sd,
+
                 driver: driver.0,
                 handle: Arc::clone(&driver.1),
+
+                pool: Mutex::new(ThreadPool::new(threads)),
             };
 
             // Stuff to be borrowed into the threads
@@ -161,7 +169,7 @@ impl Runtime {
             thread::spawn(move || loop {
                 println!("Task loop!!!!");
                 let task = match receiver.recv() {
-                    Ok(task_related) => task_related,
+                    Ok(t) => t,
                     Err(e) => panic!("{}", e),
                 };
 
@@ -172,16 +180,26 @@ impl Runtime {
         })
     }
 
+    /// Obtains a immutable reference to the Runtime.
+    ///
+    /// Panics if there is no runtime present.
+    pub fn get() -> &'static Runtime {
+        RUNTIME.get().expect("There is no runtime available!")
+    }
+
     /// Spawns a task onto the Runtime.
     pub fn spawn<F>(future: F) -> TaskHandle
     where
         F: Future<Output = ()> + Send + 'static,
     {
         let sender = Runtime::get().sender.clone();
-        let task = Task::arc_new(future, sender.clone());
+        let task = Task::arc_new(future, sender);
         let handle = TaskHandle::new(Arc::downgrade(&task));
 
-        sender.send(task).expect("failed to send task to runtime!");
+        match Runtime::send_task(task) {
+            Ok(()) => {}
+            Err(e) => panic!("{e}"),
+        };
 
         handle
     }
@@ -201,5 +219,14 @@ impl Runtime {
     /// Get registry.
     pub fn registry() -> &'static Registry {
         Runtime::get().handle.registry()
+    }
+
+    /// Send a task to the thread pool.
+    fn send_task(task: Arc<Task>) -> IoResult<()> {
+        Runtime::get()
+            .pool
+            .lock()
+            .expect("Failed lock on mutex containing the thread pool")
+            .distribute_task(task)
     }
 }

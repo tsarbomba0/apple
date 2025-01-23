@@ -1,5 +1,5 @@
 use std::cell::UnsafeCell;
-use std::ops::{Deref, DerefMut};
+use std::ops::Deref;
 
 /// This struct is an "bypass" to avoid locks when
 /// we are sure the type contained within will be used in only one thread
@@ -22,6 +22,7 @@ impl<T> MutCell<T> {
     }
 
     /// Obtains a mutable reference to the type within.
+    #[allow(clippy::mut_from_ref)]
     pub unsafe fn get_mut(&self) -> &mut T {
         unsafe { &mut *self.data.get() }
     }
